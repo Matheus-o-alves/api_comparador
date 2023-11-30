@@ -8,16 +8,38 @@ class SimuladorController extends Controller
 {
     private $dadosSimulador;
     private $simulacao = [];
-
-    public function simular(Request $request)
-    {
+          public function simular(Request $request)
+{
+    try {
         $this->carregarArquivoDadosSimulador()
              ->simularEmprestimo($request->valor_emprestimo)
              ->filtrarInstituicao($request->instituicoes)
-        ;
-        return \response()->json($this->simulacao);
-    }
+             ->filtrarConvenio($request->convenios)
+             ->filtrarParcelas($request->parcela);
 
+        $response = [];
+
+        foreach ($this->simulacao as $instituicao => $dados) {
+            foreach ($dados as $item) {
+                $response[] = [
+                    "instituicao"      => $instituicao,
+                    "valor_solicitado" => $request->valor_emprestimo,
+                    "parcelas_x_valor" => $item['parcelas'] . ' x ' . $item['valor_parcela'],
+                    "taxa_juros"       => $item['taxa'] . '% ao mês',
+                ];
+            }
+        }
+
+        if (empty($response)) {
+            return response()->json(['message' => 'Nenhum resultado encontrado para os critérios especificados.'], 404);
+        }
+
+        return response()->json($response);
+    } catch (\Exception $e) {
+        return response()->json(['message' => $e->getMessage()], 500);
+    }
+}
+      
     private function carregarArquivoDadosSimulador() : self
     {
         $this->dadosSimulador = json_decode(\File::get(storage_path("app/public/simulador/taxas_instituicoes.json")));
@@ -30,7 +52,7 @@ class SimuladorController extends Controller
             $this->simulacao[$dados->instituicao][] = [
                 "taxa"            => $dados->taxaJuros,
                 "parcelas"        => $dados->parcelas,
-                "valor_parcela"    => $this->calcularValorDaParcela($valorEmprestimo, $dados->coeficiente),
+                "valor_parcela"   => $this->calcularValorDaParcela($valorEmprestimo, $dados->coeficiente),
                 "convenio"        => $dados->convenio,
             ];
         }
@@ -42,20 +64,41 @@ class SimuladorController extends Controller
         return round($valorEmprestimo * $coeficiente, 2);
     }
 
-    private function filtrarInstituicao(array $instituicoes) : self
+    private function filtrarConvenio(array $convenios) : self
     {
-        if (\count($instituicoes))
-        {
-            $arrayAux = [];
-            foreach ($instituicoes AS $key => $instituicao)
-            {
-                if (\array_key_exists($instituicao, $this->simulacao))
-                {
-                     $arrayAux[$instituicao] = $this->simulacao[$instituicao];
-                }
-            }
-            $this->simulacao = $arrayAux;
+
+        \Log::info('Convenios antes da filtragem:', $convenios);
+
+        if (count($convenios) > 0) {
+            $this->simulacao = array_map(function ($dados) use ($convenios) {
+                return array_filter($dados, function ($item) use ($convenios) {
+                    return in_array($item['convenio'], $convenios);
+                });
+            }, $this->simulacao);
+        }
+        \Log::info('Resultado após a filtragem:', $this->simulacao);
+
+        return $this;
+    }
+    private function filtrarParcelas(int $quantidadeParcelas) : self
+    {
+        if ($quantidadeParcelas > 0) {
+            $this->simulacao = array_map(function ($dados) use ($quantidadeParcelas) {
+                return array_filter($dados, function ($item) use ($quantidadeParcelas) {
+                    return $item['parcelas'] === $quantidadeParcelas;
+                });
+            }, $this->simulacao);
         }
         return $this;
     }
+    private function filtrarInstituicao(array $instituicoes) : self
+    {
+        if (count($instituicoes) > 0) {
+            $this->simulacao = array_filter($this->simulacao, function ($key) use ($instituicoes) {
+                return in_array($key, $instituicoes);
+            }, ARRAY_FILTER_USE_KEY);
+        }
+        return $this;
+    }
+    
 }
